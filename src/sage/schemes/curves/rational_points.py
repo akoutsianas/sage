@@ -41,7 +41,7 @@ from sage.schemes.affine.affine_space import AffineSpace
 from sage.schemes.projective.projective_space import ProjectiveSpace
 from sage.modules.free_module_element import vector
 from sage.schemes.affine.affine_rational_point import enum_affine_rational_field, enum_affine_number_field
-from sage.schemes.projective.projective_rational_point import enum_projective_rational_field
+from sage.schemes.projective.projective_rational_point import enum_projective_rational_field, enum_projective_number_field
 
 
 class RationalPoints:
@@ -64,7 +64,7 @@ class RationalPoints:
         self.height_bound = height_bound
         self.basis_ring = C.base_ring()
 
-    def get_points(self, method='naive'):
+    def get_points(self):
         pass
 
 
@@ -144,11 +144,11 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
             raise ValueError('The reduction curve Cp is not smooth.')
         self.pts_modp = self.Cp.rational_points()
         self._kwargs = kwargs
+        self._powers = [p**i for i in range(prec+2)]
 
     def get_small_height_points(self):
         pts = []
-        n = self.C.ambient_space().dimension()
-        An = AffineSpace(self.basis_ring, n)
+        An = self.C.ambient_space()
         hyperplanes = self._get_hyperplanes()
         for hyperplane in hyperplanes:
             polys = self.defining_polynomials + [hyperplane]
@@ -159,10 +159,11 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
                 for barP in Sp_points:
                     try:
                         P = self._lift_point(S, barP)
-                        P = [self._apply_LLL(ai) for ai in P]
-                        if len([1 for f in self.defining_polynomials if f(P) != 0]) == 0:
-                            if P not in pts:
-                                pts.append(P)
+                        if P:
+                            P = [self._apply_LLL(ai) for ai in P]
+                            if len([1 for f in self.defining_polynomials if f(P) != 0]) == 0:
+                                if P not in pts:
+                                    pts.append(P)
                     except Exception:
                         pass
         return pts
@@ -180,14 +181,16 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
         polys = S.defining_polynomials()
         x1 = [QQ(ai) for ai in barP]
         Jac = S.Jacobian_matrix()
+        if ZZ(Jac(x1).determinant()) % self.p == 0:
+            return None
         A = Jac(x1).inverse()
         for i in range(1, self.prec + 1):
-            y1 = A * (vector([-f(x1)/self.p**i for f in polys]))
-            x1 = list(vector(x1) + self.p**i * y1)
-            x1 = [ai % self.p**i for ai in x1]
+            y1 = A * (vector([-f(x1)/self._powers[i] for f in polys]))
+            x1 = list(vector(x1) + self._powers[i] * y1)
+            x1 = [ai % self._powers[i+1] for ai in x1]
         return x1
 
     def _apply_LLL(self, a):
-        A = Matrix(ZZ, 2, [1, a, 0, self.p**self.prec])
+        A = Matrix(ZZ, 2, [1, a, 0, self._powers[self.prec+1]])
         M = A.LLL()
         return M[0, 1]/M[0, 0]
