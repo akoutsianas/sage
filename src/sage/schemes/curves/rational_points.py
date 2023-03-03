@@ -251,6 +251,9 @@ class RationalPointsAffineCurveHyperplaneNumberField(RationalPointsAffineCurve):
         xis = list(self.C.ambient_space().gens())
         An = ProjectiveSpace(self.K, n-1)
         his = enum_projective_number_field(An, bound=self.height_bound)
+        Pr = self.K(self.p)
+        vals = [min([ai.valuation(Pr) for ai in hi]) for hi in his]
+        his = [[ai*self._p_powers[-vi] if vi < 0 else ai for ai in hi] for vi, hi in zip(vals, his)]
         hyperplanes = [sum([xi * ai for xi, ai in zip(xis, hi)]) for hi in his]
         return hyperplanes
 
