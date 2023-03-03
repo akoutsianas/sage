@@ -40,6 +40,7 @@ from sage.rings.finite_rings.finite_field_constructor import FiniteField
 from sage.schemes.affine.affine_space import AffineSpace
 from sage.schemes.projective.projective_space import ProjectiveSpace
 from sage.modules.free_module_element import vector
+from sage.matrix.constructor import matrix
 from sage.schemes.affine.affine_rational_point import enum_affine_rational_field, enum_affine_number_field
 from sage.schemes.projective.projective_rational_point import enum_projective_rational_field, enum_projective_number_field
 
@@ -117,8 +118,7 @@ class RationalPointsAffineCurve(RationalPoints):
 
 class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve):
     """
-        Computes the rational points on the affine curve of the given hyperplane height_bound over the base field of the
-        curve.
+        Computes the rational points on the affine curve of the given hyperplane height_bound over QQ.
 
         INPUT:
 
@@ -171,7 +171,6 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
     def _get_hyperplanes(self):
         n = self.C.ambient_space().dimension()
         xis = list(self.C.ambient_space().gens())
-        xis.append(1)
         An = ProjectiveSpace(ZZ, n-1)
         his = enum_projective_rational_field(An, self.height_bound)
         hyperplanes = [sum([xi * ai for xi, ai in zip(xis, hi)]) for hi in his]
@@ -186,11 +185,123 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
         A = Jac(x1).inverse()
         for i in range(1, self.prec + 1):
             y1 = A * (vector([-f(x1)/self._powers[i] for f in polys]))
+            y1 = vector([ai % self._powers[1] for ai in y1])
             x1 = list(vector(x1) + self._powers[i] * y1)
             x1 = [ai % self._powers[i+1] for ai in x1]
         return x1
 
     def _apply_LLL(self, a):
-        A = Matrix(ZZ, 2, [1, a, 0, self._powers[self.prec+1]])
+        A = matrix(ZZ, 2, [1, a, 0, self._powers[self.prec+1]])
         M = A.LLL()
         return M[0, 1]/M[0, 0]
+
+
+class RationalPointsAffineCurveHyperplaneNumberField(RationalPointsAffineCurve):
+    """
+            Computes the rational points on the affine curve of the given hyperplane height_bound over base field
+            which is a number field.
+
+            INPUT:
+
+            - ``C`` -  a curve.
+            - ``height_bound`` -  a positive integer bound.
+            - ``p`` - a given prime that we use in the hyperplane method.
+            - ``prec`` - the precision of the p-adic numbers
+
+
+            OUTPUT:
+                - a list containing the points of ``X`` of hyperplane height up to ``height_bound`` sorted.
+        """
+
+    def __init__(self, C, height_bound, p, prec=10, **kwargs):
+        super().__init__(C, height_bound)
+        self.p = p
+        self.prec = prec
+        self.Qp = Qp(p, prec=prec)
+        self.K = C.base_ring()
+        self.rk = self.K.gen()
+        self._OK = self.K.ring_of_integers()
+        self._get_primes_info()
+        self._kwargs = kwargs
+        self._p_powers = [p ** i for i in range(prec + 2)]
+
+    def _get_primes_info(self):
+        self._primes_info = []
+        for Pr in self.K.primes_above(self.p):
+            fp = Pr.residue_class_degree()
+            Fp = Pr.residue_field()
+            Cp = self.C.change_ring(Fp)
+            if not Cp.is_smooth():
+                raise ValueError('The reduction curve Cp modulo the prime {0} is not smooth.'.format(Pr))
+            uniformizer = self.K.uniformizer(Pr)
+            powers = [uniformizer**i for i in range(self.prec+2)]
+            Pr_dict = {
+                'prime': Pr,
+                'residue_class_degree': fp,
+                'residue_field': Fp,
+                'lift_map': Fp.lift_map(),
+                'uniformizer': uniformizer,
+                'powers': powers,
+                'Cp': Cp
+            }
+            self._primes_info.append(Pr_dict)
+
+    def _get_hyperplanes(self):
+        n = self.C.ambient_space().dimension()
+        xis = list(self.C.ambient_space().gens())
+        An = ProjectiveSpace(self.K, n-1)
+        his = enum_projective_number_field(An, bound=self.height_bound)
+        hyperplanes = [sum([xi * ai for xi, ai in zip(xis, hi)]) for hi in his]
+        return hyperplanes
+
+    def get_small_height_points(self):
+        pts = []
+        An = self.C.ambient_space()
+        hyperplanes = self._get_hyperplanes()
+        for hyperplane in hyperplanes:
+            polys = self.defining_polynomials + [hyperplane]
+            S = An.subscheme(polys)
+            for prime_info in self._primes_info:
+                Pr = prime_info['prime']
+                Fp = prime_info['residue_field']
+                lift_map = prime_info['lift_map']
+                powers = prime_info['powers']
+                Sp = S.change_ring(Fp)
+                Sp_points = Sp.rational_points()
+                if len(Sp_points):
+                    for barP in Sp_points:
+                        try:
+                            P = self._lift_point(S, barP, Pr, lift_map, powers)
+                            if P:
+                                P = [self._apply_LLL(ai) for ai in P]
+                                if len([1 for f in self.defining_polynomials if f(P) != 0]) == 0:
+                                    if P not in pts:
+                                        pts.append(P)
+                        except Exception:
+                            pass
+        return pts
+
+    def _lift_point(self, S, barP, Pr, lift_map, powers):
+        polys = S.defining_polynomials()
+        x1 = [lift_map(ai) for ai in barP]
+        Jac = S.Jacobian_matrix()
+        if Jac(x1).determinant().valuation(Pr) > 0:
+            return None
+        A = Jac(x1).inverse()
+        for i in range(1, self.prec + 1):
+            y1 = A * (vector([-f(x1) / powers[i] for f in polys]))
+            y1 = vector([self._reduce_element(ai, 1) for ai in y1])
+            x1 = list(vector(x1) + powers[i] * y1)
+            x1 = [self._reduce_element(ai, i+1) for ai in x1]
+        return x1
+
+    def _reduce_element(self, a, k):
+        return sum([(ai % self._p_powers[k]) * self.rk**i for i, ai in enumerate(a)])
+
+    def _apply_LLL(self, a):
+        P = []
+        for ai in a:
+            A = matrix(ZZ, 2, [1, ai, 0, self._p_powers[self.prec + 1]])
+            M = A.LLL()
+            P.append(M[0, 1] / M[0, 0])
+        return sum([ai * self.rk**i for i, ai in enumerate(P)])
