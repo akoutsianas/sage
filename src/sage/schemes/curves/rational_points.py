@@ -41,6 +41,7 @@ from sage.schemes.affine.affine_space import AffineSpace
 from sage.schemes.projective.projective_space import ProjectiveSpace
 from sage.modules.free_module_element import vector
 from sage.matrix.constructor import matrix
+from sage.calculus.functions import jacobian
 from sage.schemes.affine.affine_rational_point import enum_affine_rational_field, enum_affine_number_field
 from sage.schemes.projective.projective_rational_point import enum_projective_rational_field, enum_projective_number_field
 
@@ -90,6 +91,7 @@ class RationalPointsAffineCurve(RationalPoints):
     def __init__(self, C, height_bound, prec=50, **kwargs):
         super().__init__(C, height_bound)
         self.defining_polynomials = list(C.defining_polynomials())
+        self._coordinate_ring_gens = self.C.ambient_space().coordinate_ring().gens()
         self._kwargs = kwargs
         self.prec = prec
 
@@ -115,7 +117,7 @@ class RationalPointsAffineCurve(RationalPoints):
         else:
             raise NotImplementedError('There is no other method implemented!')
 
-
+import time
 class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve):
     """
         Computes the rational points on the affine curve of the given hyperplane height_bound over QQ.
@@ -142,23 +144,46 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
         self.Cp = C.change_ring(FiniteField(p))
         if not self.Cp.is_smooth():
             raise ValueError('The reduction curve Cp is not smooth.')
-        self.pts_modp = self.Cp.rational_points()
+        self._pts_modp = [[ZZ(ai) for ai in pt] for pt in self.Cp.rational_points()]
+        self._get_pts_modp_info()
         self._kwargs = kwargs
         self._powers = [p**i for i in range(prec+2)]
 
+    def _get_pts_modp_info(self):
+        self._pts_modp_info = []
+        for barP in self._pts_modp:
+            x1 = [QQ(ai) for ai in barP]
+            Jac = jacobian(self.defining_polynomials, self._coordinate_ring_gens)
+            Jac = list(Jac(x1))
+            self._pts_modp_info.append({
+                'barP': barP,
+                'Jac': Jac
+            })
+
     def get_small_height_points(self):
+        start_all = time.time()
         pts = []
-        An = self.C.ambient_space()
+        # An = self.C.ambient_space()
+        start_hyperplanes = time.time()
         hyperplanes = self._get_hyperplanes()
-        for hyperplane in hyperplanes:
-            polys = self.defining_polynomials + [hyperplane]
-            S = An.subscheme(polys)
-            Sp = S.change_ring(FiniteField(self.p))
-            Sp_points = Sp.rational_points()
-            if len(Sp_points):
-                for barP in Sp_points:
+        end_hyperplanes = time.time()
+        print('Hyperplane: {0}, time: {1}'.format(len(hyperplanes), end_hyperplanes - start_hyperplanes))
+        avg_hyperplane = []
+        for hyperplane_info in hyperplanes:
+            start_hyperplane = time.time()
+            hyperplane = hyperplane_info['hyperplane']
+            hyperplane_coef = hyperplane_info['coefficients']
+            for barP_info in self._pts_modp_info:
+                # print('z', ZZ(hyperplane(barP)) % self.p)
+                barP = barP_info['barP']
+                Jac = barP_info['Jac']
+                # print('Jac', Jac)
+                # print('sum', ZZ(sum([Pi * ai for Pi, ai in zip(barP, hyperplane)])) % self.p)
+                if ZZ(hyperplane(barP)) % self.p == 0:
+                    # print('barP', barP)
                     try:
-                        P = self._lift_point(S, barP)
+                        P = self._lift_point(barP, Jac, hyperplane, hyperplane_coef)
+                        # print('P', P)
                         if P:
                             P = [self._apply_LLL(ai) for ai in P]
                             if len([1 for f in self.defining_polynomials if f(P) != 0]) == 0:
@@ -166,28 +191,52 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
                                     pts.append(P)
                     except Exception:
                         pass
+            end_hyperplane = time.time()
+            avg_hyperplane.append(end_hyperplane - start_hyperplane)
+        end_all = time.time()
+        print('hyperplane: {0}'.format(sum(avg_hyperplane)/len(avg_hyperplane)))
+        print('all: {0}'.format(end_all - start_all))
         return pts
 
     def _get_hyperplanes(self):
         n = self.C.ambient_space().dimension()
         xis = list(self.C.ambient_space().gens())
         An = ProjectiveSpace(ZZ, n-1)
-        his = enum_projective_rational_field(An, self.height_bound)
-        hyperplanes = [sum([xi * ai for xi, ai in zip(xis, hi)]) for hi in his]
+        hyperplanes = enum_projective_rational_field(An, self.height_bound)
+        hyperplanes = [
+            {
+                'hyperplane': sum([xi * ai for xi, ai in zip(xis, hi)]),
+                'coefficients': list(hi)
+            }
+            for hi in hyperplanes
+        ]
         return hyperplanes
 
-    def _lift_point(self, S, barP):
-        polys = S.defining_polynomials()
-        x1 = [QQ(ai) for ai in barP]
-        Jac = S.Jacobian_matrix()
-        if ZZ(Jac(x1).determinant()) % self.p == 0:
+    def _lift_point(self, barP, Jac, hyperplane, hyperplane_coef):
+        polys = self.defining_polynomials + [hyperplane]
+        # print('polys', polys)
+        x1 = barP
+        J = Jac.copy()
+        J.append(hyperplane_coef)
+        J = matrix(J)
+        # print('x1', x1)
+        # print('J', J)
+        if ZZ(J.determinant()) % self.p == 0:
             return None
-        A = Jac(x1).inverse()
+        # print('J', J)
+        A = J.inverse()
+        # print('A', A)
         for i in range(1, self.prec + 1):
+            # print('i', i)
+            # print('G(xi)', [-f(x1).valuation(self.p) for f in polys])
             y1 = A * (vector([-f(x1)/self._powers[i] for f in polys]))
+            # print('y1', y1)
             y1 = vector([ai % self._powers[1] for ai in y1])
+            # print('y1', y1)
             x1 = list(vector(x1) + self._powers[i] * y1)
+            # print('x1', x1)
             x1 = [ai % self._powers[i+1] for ai in x1]
+            # print('x1', x1)
         return x1
 
     def _apply_LLL(self, a):
