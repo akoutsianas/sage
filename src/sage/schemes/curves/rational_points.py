@@ -208,7 +208,7 @@ class RationalPointsAffineCurveHyperplaneRationalField(RationalPointsAffineCurve
                 'hyperplane': sum([xi * ai for xi, ai in zip(xis, hi)]),
                 'coefficients': list(hi)
             }
-            for hi in hyperplanes
+            for hi in hyperplanes if len([1 for barP in self._pts_modp if sum([pi*ai for pi, ai in zip(barP, list(hi))]) % self.p == 0])
         ]
         return hyperplanes
 
